@@ -99,6 +99,6 @@ For academic or research use. Not affiliated with nor endorsed by Earth911.
 
 ## Contact
 
-Questions or ideas for improvement? Open an issue or contact the maintainer.
+Questions or ideas for improvement? Open an issue or contact @ priyanshu.arora.career@gmail.com .
 
 **Happy recycling data extraction!**
