@@ -1,0 +1,179 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+import pandas as pd
+import time
+import re
+import unicodedata
+
+# ------- CONFIGURATION -------
+MATERIAL = "Electronics"
+PINCODE = "10001"
+EARTH911_URL = "https://search.earth911.com/"
+SEARCH_BTN_XPATH = "/html/body/div[1]/div/div[1]/div[2]/div[3]/div/div/form/fieldset/div/input"
+RADIUS_XPATH = "/html/body/div[1]/div/div[2]/div/div/div[2]/div/div/div[1]/div/label/select"
+CSV_FILENAME = "earth911_cleaned_with_materialstable.csv"
+
+def setup_driver():
+    from selenium.webdriver.chrome.options import Options
+    options = Options()
+    options.add_argument("--window-size=1200,900")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.page_load_strategy = "eager"
+    return webdriver.Chrome(options=options)
+
+def close_email_popup(driver, max_attempts=3):
+    for _ in range(max_attempts):
+        try:
+            btn = WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "div._close"))
+            )
+            btn.click()
+            time.sleep(1)
+            return
+        except Exception:
+            try:
+                icon = driver.find_element(By.CSS_SELECTOR, "div._close > i._close-icon")
+                ActionChains(driver).move_to_element(icon).click(icon).perform()
+                time.sleep(1)
+                return
+            except Exception:
+                time.sleep(1)
+
+def clean_text(text):
+    # Strong unicode + symbol sanitizer
+    if not text: return ""
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"[\u2000-\u206F\u00A0-\u00BF\uFEFF\x00-\x1f\x7f-\x9f]", " ", text)
+    text = text.replace('\xa0', ' ')
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def extract_material_names_from_table(soup):
+    material_names = []
+    tbody = soup.select_one('div#results-panes table tbody')
+    if not tbody:
+        tbody = soup.select_one('table tbody')
+    if tbody:
+        for tr in tbody.find_all('tr'):
+            td = tr.find('td', class_='material-name')
+            if td:
+                span = td.find('span')
+                if span:
+                    name = clean_text(span.get_text(strip=True))
+                    if name: material_names.append(name)
+    return material_names
+
+def extract_business_details(driver, fallback_materials_on_mainpage=None):
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    # Business Name and Last Update Date
+    h1 = soup.find('h1', class_='back-to')
+    if h1:
+        business_name = clean_text(h1.find(string=True, recursive=False) or "")
+        last_update = h1.find('span', class_='last-verified')
+        last_update_date = clean_text((last_update.get_text(strip=True).replace('Updated ', '')) if last_update else "")
+    else:
+        business_name = ""
+        last_update_date = ""
+    # Address
+    contact_div = soup.find('div', class_='contact')
+    if contact_div:
+        address_lines = [clean_text(p.get_text(strip=True)) for p in contact_div.find_all('p', class_='addr')]
+        street_address = ", ".join(address_lines)
+    else:
+        street_address = ""
+    # Materials: from table (priority) or from main page fallback
+    materials_table_names = extract_material_names_from_table(soup)
+    if not materials_table_names and fallback_materials_on_mainpage:
+        materials_table_names = fallback_materials_on_mainpage
+    return dict(
+        business_name=business_name,
+        last_update_date=last_update_date,
+        street_address=street_address,
+        materials_accepted_table=", ".join(materials_table_names)
+    )
+
+def main():
+    driver = setup_driver()
+    wait = WebDriverWait(driver, 25)
+    all_data = []
+
+    try:
+        driver.get(EARTH911_URL)
+        close_email_popup(driver)
+
+        material_box = wait.until(EC.element_to_be_clickable((By.ID, "what")))
+        close_email_popup(driver)
+        material_box.click()
+        close_email_popup(driver)
+        material_box.clear()
+        material_box.send_keys(MATERIAL)
+
+        pincode_box = wait.until(EC.element_to_be_clickable((By.ID, "where")))
+        close_email_popup(driver)
+        pincode_box.click()
+        close_email_popup(driver)
+        pincode_box.clear()
+        pincode_box.send_keys(PINCODE)
+
+        time.sleep(1)
+        close_email_popup(driver)
+
+        search_btn = wait.until(EC.element_to_be_clickable((By.XPATH, SEARCH_BTN_XPATH)))
+        close_email_popup(driver)
+        search_btn.click()
+        time.sleep(2)
+        close_email_popup(driver)
+
+        driver.execute_script("window.scrollTo(0, 1200);")
+        time.sleep(2)
+        close_email_popup(driver)
+
+        radius_dropdown = wait.until(EC.element_to_be_clickable((By.XPATH, RADIUS_XPATH)))
+        select = Select(radius_dropdown)
+        select.select_by_visible_text("100 miles")
+        time.sleep(3)
+        close_email_popup(driver)
+
+        wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="results-panes"]')))
+        main_soup = BeautifulSoup(driver.page_source, "html.parser")
+        listings = main_soup.select('ul.result-list li.result-item')
+        links = []
+        main_materials_list = []
+        for li in listings:
+            a = li.select_one('h2.title a')
+            link = a['href'] if a and a.has_attr("href") else ""
+            if link.startswith('/'):
+                link = "https://search.earth911.com" + link
+            links.append(link)
+            mats = [clean_text(span.get_text(strip=True)) for span in li.select('p.result-materials span.material')]
+            main_materials_list.append(mats)
+        print(f"[INFO] Found {len(links)} listings.")
+
+        for idx, link in enumerate(links, 1):
+            driver.execute_script("window.open(arguments[0], '_blank');", link)
+            driver.switch_to.window(driver.window_handles[-1])
+            time.sleep(2.5)
+            data = extract_business_details(driver, fallback_materials_on_mainpage=main_materials_list[idx - 1])
+            all_data.append(data)
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
+            time.sleep(0.7)
+
+        df = pd.DataFrame(all_data)
+        for col in df.columns:
+            df[col] = df[col].astype(str).apply(clean_text)
+        df.to_csv(CSV_FILENAME, index=False)
+        print(f"[INFO] Results saved as {CSV_FILENAME}\n[INFO] All symbols/invisible chars removed.")
+
+    finally:
+        driver.quit()
+
+if __name__ == "__main__":
+    main()
