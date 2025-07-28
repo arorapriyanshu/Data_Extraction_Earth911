@@ -1,5 +1,4 @@
-Absolutely! Here’s a professional **README.md** for your Earth911 scraping project, explaining requirements, setup, functionality, and how to run or modify the script.  
-**You can copy-paste this directly to a README.md file in your project repo.**
+
 
 # Earth911 Web Scraper
 
